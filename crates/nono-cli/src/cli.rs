@@ -58,6 +58,9 @@ const STYLES: Styles = Styles::plain().header(Style::new().bold());
   policy     [deprecated] Use 'nono profile' instead
   profile    Create, inspect, and compare nono profiles
 
+\x1b[1mSHELL\x1b[0m
+  completion   Generate shell completion scripts
+
 \x1b[1mOPTIONS\x1b[0m
 {options}
 
@@ -576,6 +579,24 @@ IN-BAND DETACH:
 ")]
     List(ListArgs),
 
+    /// Generate shell completion scripts
+    #[command(name = "completion")]
+    #[command(help_template = "\
+{about}
+
+\x1b[1mUSAGE\x1b[0m
+  nono completion <shell>
+
+{all-args}
+{after-help}")]
+    #[command(after_help = "\x1b[1mEXAMPLES\x1b[0m
+  nono completion bash >> ~/.bashrc
+  nono completion zsh > ~/.zfunc/_nono
+  nono completion fish > ~/.config/fish/completions/nono.fish
+  nono completion powershell >> $PROFILE
+")]
+    Completions(CompletionsArgs),
+
     /// Internal: open a URL via supervisor IPC
     #[command(hide = true)]
     OpenUrlHelper(OpenUrlHelperArgs),
@@ -703,6 +724,34 @@ pub struct ListArgs {
 pub struct OpenUrlHelperArgs {
     /// The URL to open
     pub url: String,
+}
+
+/// Shell variant for completion generation.
+///
+/// Mirrors `clap_complete::Shell` but is defined here so it implements
+/// `clap::ValueEnum` and appears correctly in `--help` output.
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum CompletionShell {
+    /// Bourne Again SHell (bash)
+    Bash,
+    /// Z Shell (zsh)
+    Zsh,
+    /// Friendly Interactive Shell (fish)
+    Fish,
+    /// PowerShell
+    #[value(name = "powershell")]
+    PowerShell,
+}
+
+#[derive(Parser, Debug)]
+#[command(disable_help_flag = true)]
+pub struct CompletionsArgs {
+    /// Shell to generate completions for
+    pub shell: CompletionShell,
+
+    /// Print help
+    #[arg(long, short = 'h', action = clap::ArgAction::Help, help_heading = "OPTIONS")]
+    pub help: Option<bool>,
 }
 
 // NOTE: `PolicyArgs`, `PolicyCommands`, and `Policy*Args` types that
@@ -3364,9 +3413,30 @@ mod tests {
     /// All subcommand names that must appear in the root help template.
     /// If you add a new command to the `Commands` enum, add it here too.
     const ALL_SUBCOMMANDS: &[&str] = &[
-        "setup", "run", "shell", "wrap", "learn", "why", "ps", "stop", "detach", "attach", "logs",
-        "inspect", "session", "rollback", "audit", "trust", "policy", "profile", "pull", "remove",
-        "update", "search", "list",
+        "setup",
+        "run",
+        "shell",
+        "wrap",
+        "learn",
+        "why",
+        "ps",
+        "stop",
+        "detach",
+        "attach",
+        "logs",
+        "inspect",
+        "session",
+        "rollback",
+        "audit",
+        "trust",
+        "policy",
+        "profile",
+        "pull",
+        "remove",
+        "update",
+        "search",
+        "list",
+        "completion",
     ];
 
     #[test]
