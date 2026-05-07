@@ -2120,4 +2120,35 @@ mod tests {
             );
         });
     }
+
+    #[test]
+    fn yaml_reverse_collects_failures_instead_of_swallowing() {
+        // Mirror of `reverse_collects_failures_instead_of_swallowing` for
+        // `YamlMerge`: inject a malformed YAML target file so that
+        // `restore_yaml_leaves` → `read_yaml` returns an error. The
+        // `reverse` function must surface the error rather than silently
+        // skipping it, so the caller knows the rollback is incomplete and
+        // the file was not left in a misformatted state.
+        with_fake_home(|home| {
+            let target = home.join("broken.yaml");
+            fs::write(&target, "key: [unclosed").expect("seed broken");
+
+            let records = vec![WiringRecord::YamlMerge {
+                file: target.to_string_lossy().into_owned(),
+                leaves: vec![JsonLeaf {
+                    path: vec!["k".to_string()],
+                    installed_value: Value::Bool(true),
+                    prior_value: None,
+                }],
+                created_parents: Vec::new(),
+            }];
+            let failures = reverse(&records);
+            assert_eq!(failures.len(), 1, "broken YAML must surface as failure");
+            assert!(
+                failures[0].record_summary.contains("yaml_merge"),
+                "summary should identify the directive: {}",
+                failures[0].record_summary
+            );
+        });
+    }
 }
