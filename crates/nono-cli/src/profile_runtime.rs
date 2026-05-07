@@ -383,17 +383,14 @@ fn prepare_profile_with_options(
             workdir,
         ),
         allowed_env_vars: loaded_profile.as_ref().and_then(|profile| {
-            profile.environment.as_ref().and_then(|env_config| {
-                if env_config.allow_vars.is_empty() {
-                    return None;
-                }
+            profile.environment.as_ref().map(|env_config| {
                 if let Some(err) = crate::exec_strategy::validate_env_var_patterns(
                     &env_config.allow_vars,
                     "allow_vars",
                 ) {
                     eprintln!("Warning: {}", err);
                 }
-                Some(env_config.allow_vars.clone())
+                env_config.allow_vars.clone()
             })
         }),
         denied_env_vars: loaded_profile.as_ref().and_then(|profile| {
