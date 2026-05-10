@@ -53,7 +53,7 @@ pub(crate) fn run_why(args: WhyArgs) -> Result<()> {
                 WhyContext {
                     caps: state.to_caps()?,
                     overridden_paths: paths,
-                    allowed_domains: vec![],
+                    allowed_domains: state.allowed_domains.clone(),
                 }
             }
             None => {
