@@ -43,11 +43,64 @@ const ATTACH_ACK_BUSY: u8 = 1;
 const ATTACH_ACK_DENIED: u8 = 2;
 const ATTACH_REQUEST_ATTACH: u8 = 0;
 const ATTACH_REQUEST_DETACH: u8 = 1;
-const ATTACH_SCREEN_ENTER_ESCAPE: &[u8] =
-    b"\x1b[0m\x1b(B\x1b)B\x0f\x1b[r\x1b[?6l\x1b[?1049h\x1b[?25h\x1b[2J\x1b[H";
-const TERMINAL_RESTORE_ESCAPE: &[u8] = b"\x1b[<u\x1b[>0n\x1b[>1n\x1b[>2n\x1b[>3n\x1b[>4n\x1b[>6n\x1b[>7n\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[?2004l\x1b[?1049l\x1b[?25h";
-const TERMINAL_RESTORE_AND_CLEAR_ESCAPE: &[u8] =
-    b"\x1b[<u\x1b[>0n\x1b[>1n\x1b[>2n\x1b[>3n\x1b[>4n\x1b[>6n\x1b[>7n\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[?2004l\x1b[?1l\x1b>\x1b[?1049l\x1b[?25h\x1b[2J\x1b[H";
+// Composed terminal escape sequences. Each concat! block documents its
+// individual CSI sequences inline so the byte-level intent is auditable
+// without having to decode raw hex.
+const ENTER_ALT_SCREEN: &str = "\x1b[?1049h";
+const EXIT_ALT_SCREEN: &str = "\x1b[?1049l";
+
+const ATTACH_SCREEN_ENTER_ESCAPE: &[u8] = concat!(
+    "\x1b[0m",       // reset attributes
+    "\x1b(B\x1b)B",  // set G0/G1 charset to ASCII
+    "\x0f",          // shift-in (select G0)
+    "\x1b[r",        // reset scroll region
+    "\x1b[?6l",      // disable origin mode
+    "\x1b[?1049h",   // enter alternate screen
+    "\x1b[?25h",     // show cursor
+    "\x1b[2J\x1b[H", // clear screen + cursor home
+)
+.as_bytes();
+
+const TERMINAL_RESTORE_NORMAL: &[u8] = concat!(
+    "\x1b[<u", // restore cursor (kitty private)
+    "\x1b[>0n\x1b[>1n\x1b[>2n\x1b[>3n\x1b[>4n\x1b[>6n\x1b[>7n", // disable key reporting
+    "\x1b[?1000l\x1b[?1002l\x1b[?1003l", // disable mouse tracking
+    "\x1b[?1005l\x1b[?1006l\x1b[?1015l", // disable mouse encodings
+    "\x1b[?1004l", // disable focus events
+    "\x1b[?2004l", // disable bracketed paste
+    "\x1b[?1l", // disable application cursor keys
+    "\x1b>",   // normal keypad mode
+    "\x1b[?25h", // show cursor
+)
+.as_bytes();
+
+const TERMINAL_RESTORE_ESCAPE: &[u8] = concat!(
+    "\x1b[<u", // restore cursor (kitty private)
+    "\x1b[>0n\x1b[>1n\x1b[>2n\x1b[>3n\x1b[>4n\x1b[>6n\x1b[>7n", // disable key reporting
+    "\x1b[?1000l\x1b[?1002l\x1b[?1003l", // disable mouse tracking
+    "\x1b[?1005l\x1b[?1006l\x1b[?1015l", // disable mouse encodings
+    "\x1b[?1004l", // disable focus events
+    "\x1b[?2004l", // disable bracketed paste
+    "\x1b[?1049l", // exit alternate screen
+    "\x1b[?25h", // show cursor
+)
+.as_bytes();
+
+const TERMINAL_RESTORE_AND_CLEAR_ESCAPE: &[u8] = concat!(
+    "\x1b[<u", // restore cursor (kitty private)
+    "\x1b[>0n\x1b[>1n\x1b[>2n\x1b[>3n\x1b[>4n\x1b[>6n\x1b[>7n", // disable key reporting
+    "\x1b[?1000l\x1b[?1002l\x1b[?1003l", // disable mouse tracking
+    "\x1b[?1005l\x1b[?1006l\x1b[?1015l", // disable mouse encodings
+    "\x1b[?1004l", // disable focus events
+    "\x1b[?2004l", // disable bracketed paste
+    "\x1b[?1l", // disable application cursor keys
+    "\x1b>",   // normal keypad mode
+    "\x1b[?1049l", // exit alternate screen
+    "\x1b[?25h", // show cursor
+    "\x1b[2J\x1b[H", // clear screen + cursor home
+)
+.as_bytes();
+
 const CLEAR_PARENT_OUTPUT_AREA: &[u8] = b"\r\x1b[K\x1b[J";
 
 static ATTACH_RESIZE_PIPE_READ: AtomicI32 = AtomicI32::new(-1);
@@ -353,7 +406,8 @@ impl PtyProxy {
             return false;
         }
 
-        leave_attach_screen();
+        let in_alt_screen = self.screen.alternate_screen_active();
+        leave_attach_screen(in_alt_screen);
         self.restore_terminal();
         prepare_parent_output_area();
         self.client = None;
@@ -362,6 +416,11 @@ impl PtyProxy {
         self.pending_detach_escape.clear();
         self.persist_attachment_state(crate::session::SessionAttachment::Detached);
         true
+    }
+
+    /// Whether the child process is currently using the alternate screen buffer.
+    pub fn in_alt_screen(&self) -> bool {
+        self.screen.alternate_screen_active()
     }
 
     /// Shut down the attach listener so no new connections can be accepted.
@@ -435,9 +494,10 @@ impl PtyProxy {
                         }
                     }
                     ATTACH_REQUEST_DETACH => {
+                        let in_alt = self.screen.alternate_screen_active();
                         let detached_terminal = self.detach();
                         if detached_terminal {
-                            write_detach_terminal_reset(libc::STDOUT_FILENO);
+                            write_detach_terminal_reset(libc::STDOUT_FILENO, in_alt);
                             write_detach_notice(libc::STDERR_FILENO);
                         }
                         let _ = stream.write_all(&[ATTACH_ACK_OK]);
@@ -716,7 +776,7 @@ impl PtyProxy {
             .as_ref()
             .is_some_and(AttachedClient::is_terminal)
         {
-            leave_attach_screen();
+            leave_attach_screen(self.screen.alternate_screen_active());
             self.restore_terminal();
             true
         } else {
@@ -1223,7 +1283,7 @@ fn compose_replay_body(
     }
 }
 
-/// `CSI 3 J` — erase saved lines (xterm). Wipes the outer terminal's native
+/// CSI 3 J — erase saved lines (xterm). Wipes the outer terminal's native
 /// scrollback buffer without touching the currently visible area.
 const ERASE_NATIVE_SCROLLBACK: &[u8] = b"\x1b[3J";
 
@@ -1358,10 +1418,9 @@ impl Drop for PtyProxy {
             .as_ref()
             .is_some_and(AttachedClient::is_terminal)
         {
-            write_detach_terminal_reset(libc::STDOUT_FILENO);
+            write_detach_terminal_reset(libc::STDOUT_FILENO, self.screen.alternate_screen_active());
         }
         self.restore_terminal();
-        // Clean up the attach socket
         let _ = std::fs::remove_file(&self.attach_path);
     }
 }
@@ -1422,8 +1481,8 @@ struct AltScreenTracker {
     tail: Vec<u8>,
 }
 
-const ALT_SCREEN_ENTER_SEQ: &[u8] = b"\x1b[?1049h";
-const ALT_SCREEN_EXIT_SEQ: &[u8] = b"\x1b[?1049l";
+const ALT_SCREEN_ENTER_SEQ: &[u8] = ENTER_ALT_SCREEN.as_bytes();
+const ALT_SCREEN_EXIT_SEQ: &[u8] = EXIT_ALT_SCREEN.as_bytes();
 
 impl AltScreenTracker {
     fn observe(&mut self, bytes: &[u8]) {
@@ -1596,8 +1655,12 @@ fn recv_attach_resize_socket(stream: &UnixStream) -> Result<Option<UnixDatagram>
     Ok(Some(socket))
 }
 
-fn leave_attach_screen() {
-    let esc = terminal_restore_escape(false);
+fn leave_attach_screen(in_alt_screen: bool) {
+    let esc = if in_alt_screen {
+        terminal_restore_escape(false)
+    } else {
+        TERMINAL_RESTORE_NORMAL
+    };
     let _ = write_all_fd(libc::STDOUT_FILENO, esc);
     drain_terminal_output(libc::STDOUT_FILENO);
 }
@@ -1607,11 +1670,13 @@ fn prepare_parent_output_area() {
     drain_terminal_output(libc::STDOUT_FILENO);
 }
 
-pub(crate) fn write_detach_terminal_reset(fd: RawFd) {
-    let esc = terminal_restore_escape(true);
-    unsafe {
-        libc::write(fd, esc.as_ptr().cast(), esc.len());
-    }
+pub(crate) fn write_detach_terminal_reset(fd: RawFd, in_alt_screen: bool) {
+    let esc = if in_alt_screen {
+        terminal_restore_escape(true)
+    } else {
+        TERMINAL_RESTORE_NORMAL
+    };
+    let _ = write_all_fd(fd, esc);
 }
 
 pub(crate) fn write_detach_notice(fd: RawFd) {
@@ -2029,25 +2094,19 @@ where
     };
 
     // Restore the terminal. If the child was in alt-screen mode at detach
-    // (vim, htop, …), the `\x1b[?1049l` in the non-clearing restore escape
-    // already exits the alt buffer, which most terminals implement as
-    // "restore the saved main-screen contents" — exactly the pre-attach view
-    // the user wants back. In that case we must NOT clear, or we wipe that
-    // restored state. For normal-screen sessions (shells, Claude Code) the
-    // `\x1b[?1049l` is a no-op and the clear is what scrubs residual UI
-    // (half-drawn prompts, cursor blocks) that would otherwise be left
-    // behind. Then put termios back into cooked mode so the subsequent
-    // detach notice renders with proper \r\n handling.
-    let clear_on_restore = !alt_screen_tracker.in_alt_screen;
-    if clear_on_restore {
-        // Before we clear, push the current viewport into the native
-        // scrollback via SU (DEC Scroll Up) so the user can reach the full
-        // final view of the session by scrolling back after detach.
-        // Without this, TUIs like Claude Code that paint in place never
-        // cause the viewport to scroll out of the top during live use, so
-        // those lines never entered native scrollback — and the clear
-        // would wipe them permanently. With SU they land in scrollback
-        // first, then the clear operates on an empty viewport.
+    // (vim, htop, …), the `\x1b[?1049l` exits the alt buffer and most
+    // terminals restore the saved main-screen contents — exactly the
+    // pre-attach view the user wants back. In that case we must NOT clear,
+    // or we wipe that restored state. For normal-screen sessions we must
+    // NOT send `\x1b[?1049l` at all: on VTE-based terminals (GNOME
+    // Terminal, Tilix, etc.) an unsolicited alt-screen exit restores an
+    // empty/uninitialized saved buffer, destroying the scrollback.
+    let in_alt_screen = alt_screen_tracker.in_alt_screen;
+    if !in_alt_screen {
+        // Normal-screen: push the viewport into native scrollback via DEC
+        // Scroll Up so the user can reach the full final session view by
+        // scrolling back. Then restore terminal modes without touching the
+        // alternate screen buffer.
         if let Some(winsize) = get_terminal_winsize() {
             if winsize.ws_row > 0 {
                 let scroll_up = format!("\x1b[{}S", winsize.ws_row);
@@ -2057,7 +2116,11 @@ where
     }
     let _ = write_all_fd(
         libc::STDOUT_FILENO,
-        terminal_restore_escape(clear_on_restore),
+        if in_alt_screen {
+            terminal_restore_escape(false)
+        } else {
+            TERMINAL_RESTORE_NORMAL
+        },
     );
     if let Some(ref termios) = saved_termios {
         let _ = nix::sys::termios::tcsetattr(
@@ -2322,7 +2385,7 @@ mod tests {
         select_attach_replay_bytes, terminal_restore_escape, write_all_fd, AltScreenTracker,
         AttachedClient, PtyProxy, ReadFdOutcome, ScreenState, ATTACH_HANDSHAKE_MAGIC,
         ATTACH_REQUEST_ATTACH, ATTACH_SCREEN_ENTER_ESCAPE, DEFAULT_DETACH_SEQUENCE,
-        ERASE_NATIVE_SCROLLBACK,
+        ERASE_NATIVE_SCROLLBACK, TERMINAL_RESTORE_NORMAL,
     };
     use nix::libc;
     use std::collections::VecDeque;
@@ -2384,6 +2447,25 @@ mod tests {
     fn terminal_restore_escape_can_clear_screen() {
         let esc = std::str::from_utf8(terminal_restore_escape(true)).unwrap_or("");
         assert!(esc.ends_with("\u{1b}[2J\u{1b}[H"));
+    }
+
+    #[test]
+    fn terminal_restore_normal_omits_alt_screen_exit() {
+        let esc = std::str::from_utf8(TERMINAL_RESTORE_NORMAL).unwrap_or("");
+        assert!(
+            !esc.contains("\u{1b}[?1049l"),
+            "normal-mode restore must not exit alternate screen"
+        );
+        assert!(
+            !esc.contains("\u{1b}[2J"),
+            "normal-mode restore must not clear screen"
+        );
+        for mode in ["1000", "1002", "1003", "1005", "1006", "1015"] {
+            assert!(
+                esc.contains(&format!("\u{1b}[?{mode}l")),
+                "normal-mode restore must still disable mouse mode {mode}"
+            );
+        }
     }
 
     #[test]
