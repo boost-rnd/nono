@@ -509,18 +509,17 @@ fn render_diagnostic_line(idx: usize, line: &str, t: &theme::Theme) -> String {
 }
 
 /// Print dry run message
-pub fn print_dry_run(program: &OsStr, cmd_args: &[OsString], silent: bool) {
+pub fn print_dry_run(
+    program: &OsStr,
+    cmd_args: &[OsString],
+    redaction_policy: &nono::ScrubPolicy,
+    silent: bool,
+) {
     if silent {
         return;
     }
     let t = theme::current();
-    let mut command = Vec::with_capacity(1 + cmd_args.len());
-    command.push(program.to_string_lossy().into_owned());
-    command.extend(
-        cmd_args
-            .iter()
-            .map(|arg| arg.to_string_lossy().into_owned()),
-    );
+    let command_line = dry_run_command_line(program, cmd_args, redaction_policy);
 
     eprintln!(
         "  {} {}",
@@ -530,11 +529,23 @@ pub fn print_dry_run(program: &OsStr, cmd_args: &[OsString], silent: bool) {
             t.subtext,
         ),
     );
-    eprintln!(
-        "  {} {}",
-        fg("$", t.subtext),
-        fg(&format_command_line(&command), t.text)
+    eprintln!("  {} {}", fg("$", t.subtext), fg(&command_line, t.text));
+}
+
+fn dry_run_command_line(
+    program: &OsStr,
+    cmd_args: &[OsString],
+    redaction_policy: &nono::ScrubPolicy,
+) -> String {
+    let mut command = Vec::with_capacity(1 + cmd_args.len());
+    command.push(program.to_string_lossy().into_owned());
+    command.extend(
+        cmd_args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned()),
     );
+
+    format_command_line(&nono::scrub_argv_with_policy(&command, redaction_policy))
 }
 
 // ---------------------------------------------------------------------------
@@ -769,10 +780,11 @@ pub fn print_profile_hint(program: &str, profile: &str, silent: bool) {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_unix_socket_mode_badge, print_capabilities, print_profile_hint,
-        render_diagnostic_footer, render_terminal_block_for_tty,
+        dry_run_command_line, format_unix_socket_mode_badge, print_capabilities,
+        print_profile_hint, render_diagnostic_footer, render_terminal_block_for_tty,
     };
     use nono::{CapabilitySet, UnixSocketMode};
+    use std::ffi::{OsStr, OsString};
     use tempfile::tempdir;
 
     #[test]
@@ -793,6 +805,38 @@ mod tests {
     #[test]
     fn print_profile_hint_is_noop_when_silent() {
         print_profile_hint("claude", "claude-code", true);
+    }
+
+    #[test]
+    fn dry_run_command_line_redacts_default_secrets() {
+        let line = dry_run_command_line(
+            OsStr::new("curl"),
+            &[
+                OsString::from("--token"),
+                OsString::from("real-token"),
+                OsString::from("https://example.com/api?token=real-secret"),
+            ],
+            &nono::ScrubPolicy::secure_default(),
+        );
+
+        assert!(line.contains("[REDACTED]"));
+        assert!(!line.contains("real-token"));
+        assert!(!line.contains("real-secret"));
+    }
+
+    #[test]
+    fn dry_run_command_line_uses_configured_redaction_policy() {
+        let mut redactions = nono::ScrubPolicy::secure_default();
+        redactions.add_flag("--private-token");
+
+        let line = dry_run_command_line(
+            OsStr::new("curl"),
+            &[OsString::from("--private-token=private-secret")],
+            &redactions,
+        );
+
+        assert_eq!(line, "curl '--private-token=[REDACTED]'");
+        assert!(!line.contains("private-secret"));
     }
 
     #[test]

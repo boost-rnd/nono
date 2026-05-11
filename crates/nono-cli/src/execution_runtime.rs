@@ -352,6 +352,7 @@ pub(crate) fn execute_sandboxed(plan: LaunchPlan) -> Result<()> {
                 proxy_handle: proxy_handle.as_ref(),
                 executable_identity: executable_identity.as_ref(),
                 audit_signer: audit_signer.as_ref(),
+                redaction_policy: &flags.redaction_policy,
                 silent: flags.silent,
             })?;
 

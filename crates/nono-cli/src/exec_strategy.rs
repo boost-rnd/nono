@@ -274,6 +274,8 @@ pub struct SupervisorConfig<'a> {
     pub open_url_allow_localhost: bool,
     /// Optional append-only audit recorder for supervisor events.
     pub audit_recorder: Option<&'a Mutex<crate::audit_integrity::AuditRecorder>>,
+    /// Redaction policy for command context in diagnostics.
+    pub redaction_policy: &'a nono::ScrubPolicy,
     /// Whether direct LaunchServices opening is enabled for this session.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub allow_launch_services_active: bool,
@@ -1222,6 +1224,14 @@ pub fn execute_supervised(
                     None
                 };
 
+                let default_redaction_policy;
+                let redaction_policy = if let Some(supervisor_config) = supervisor {
+                    supervisor_config.redaction_policy
+                } else {
+                    default_redaction_policy = nono::ScrubPolicy::secure_default();
+                    &default_redaction_policy
+                };
+
                 let mut formatter = DiagnosticFormatter::new(config.caps)
                     .with_mode(mode)
                     .with_denials(&denials)
@@ -1235,7 +1245,7 @@ pub fn execute_supervised(
                     formatter = formatter.with_command(nono::diagnostic::CommandContext {
                         program: program.clone(),
                         resolved_path: config.resolved_program.to_path_buf(),
-                        args: config.command.to_vec(),
+                        args: nono::scrub_argv_with_policy(config.command, redaction_policy),
                     });
                 }
                 let footer = formatter.format_footer(exit_code);
@@ -3690,6 +3700,7 @@ mod tests {
             open_url_origins: &[],
             open_url_allow_localhost: false,
             audit_recorder: None,
+            redaction_policy: &nono::ScrubPolicy::secure_default(),
             allow_launch_services_active: false,
             #[cfg(target_os = "linux")]
             proxy_port: 0,
@@ -3789,6 +3800,7 @@ mod tests {
             open_url_origins: &[],
             open_url_allow_localhost: false,
             audit_recorder: None,
+            redaction_policy: &nono::ScrubPolicy::secure_default(),
             allow_launch_services_active: false,
             #[cfg(target_os = "linux")]
             proxy_port: 8080,
@@ -3864,6 +3876,7 @@ mod tests {
             open_url_origins: &origins,
             open_url_allow_localhost: false,
             audit_recorder: None,
+            redaction_policy: &nono::ScrubPolicy::secure_default(),
             allow_launch_services_active: false,
             #[cfg(target_os = "linux")]
             proxy_port: 0,
@@ -3897,6 +3910,7 @@ mod tests {
             open_url_origins: &[],
             open_url_allow_localhost: false,
             audit_recorder: None,
+            redaction_policy: &nono::ScrubPolicy::secure_default(),
             allow_launch_services_active: false,
             #[cfg(target_os = "linux")]
             proxy_port: 0,
@@ -3928,6 +3942,7 @@ mod tests {
             open_url_origins: &[],
             open_url_allow_localhost: true,
             audit_recorder: None,
+            redaction_policy: &nono::ScrubPolicy::secure_default(),
             allow_launch_services_active: false,
             #[cfg(target_os = "linux")]
             proxy_port: 0,
@@ -3943,6 +3958,7 @@ mod tests {
             open_url_origins: &[],
             open_url_allow_localhost: false,
             audit_recorder: None,
+            redaction_policy: &nono::ScrubPolicy::secure_default(),
             allow_launch_services_active: false,
             #[cfg(target_os = "linux")]
             proxy_port: 0,
@@ -3979,6 +3995,7 @@ mod tests {
             open_url_origins: &[],
             open_url_allow_localhost: false,
             audit_recorder: None,
+            redaction_policy: &nono::ScrubPolicy::secure_default(),
             allow_launch_services_active: false,
             #[cfg(target_os = "linux")]
             proxy_port: 0,
@@ -4118,6 +4135,7 @@ mod tests {
             open_url_origins: &[],
             open_url_allow_localhost: false,
             audit_recorder: None,
+            redaction_policy: &nono::ScrubPolicy::secure_default(),
             allow_launch_services_active: true,
             #[cfg(target_os = "linux")]
             proxy_port: 0,

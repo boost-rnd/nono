@@ -35,6 +35,7 @@ pub(crate) struct SupervisedRuntimeContext<'a> {
     pub(crate) proxy_handle: Option<&'a nono_proxy::server::ProxyHandle>,
     pub(crate) executable_identity: Option<&'a ExecutableIdentity>,
     pub(crate) audit_signer: Option<&'a AuditSigner>,
+    pub(crate) redaction_policy: &'a nono::ScrubPolicy,
     pub(crate) silent: bool,
 }
 
@@ -84,6 +85,7 @@ fn create_session_runtime_state(
     caps: &CapabilitySet,
     session: &SessionLaunchOptions,
     audit_state: Option<&AuditState>,
+    redaction_policy: &nono::ScrubPolicy,
 ) -> Result<SessionRuntimeState> {
     let started = chrono::Local::now().to_rfc3339();
     let short_session_id = std::env::var(DETACHED_SESSION_ID_ENV)
@@ -109,7 +111,7 @@ fn create_session_runtime_state(
             session::SessionAttachment::Attached
         },
         exit_code: None,
-        command: command.to_vec(),
+        command: nono::scrub_argv_with_policy(command, redaction_policy),
         profile: session.profile_name.clone(),
         workdir: std::env::current_dir().unwrap_or_default(),
         network: match caps.network_mode() {
@@ -160,6 +162,7 @@ pub(crate) fn execute_supervised_runtime(ctx: SupervisedRuntimeContext<'_>) -> R
         proxy_handle,
         executable_identity,
         audit_signer,
+        redaction_policy,
         silent,
     } = ctx;
 
@@ -175,8 +178,13 @@ pub(crate) fn execute_supervised_runtime(ctx: SupervisedRuntimeContext<'_>) -> R
     // until after the baseline walk, the 30-second startup timeout can fire
     // before the session becomes attachable.
     let trust_interceptor = create_trust_interceptor(trust);
-    let session_runtime =
-        create_session_runtime_state(command, caps, session, audit_state.as_ref())?;
+    let session_runtime = create_session_runtime_state(
+        command,
+        caps,
+        session,
+        audit_state.as_ref(),
+        redaction_policy,
+    )?;
     let SessionRuntimeState {
         started,
         short_session_id,
@@ -197,7 +205,10 @@ pub(crate) fn execute_supervised_runtime(ctx: SupervisedRuntimeContext<'_>) -> R
     let audit_recorder = if audit_state.is_some() && !rollback.no_audit_integrity {
         audit_state
             .as_ref()
-            .map(|state| AuditRecorder::new(state.session_dir.clone()).map(Mutex::new))
+            .map(|state| {
+                AuditRecorder::new_with_policy(state.session_dir.clone(), redaction_policy.clone())
+                    .map(Mutex::new)
+            })
             .transpose()?
     } else {
         None
@@ -221,6 +232,7 @@ pub(crate) fn execute_supervised_runtime(ctx: SupervisedRuntimeContext<'_>) -> R
         open_url_origins: &proxy.open_url_origins,
         open_url_allow_localhost: proxy.open_url_allow_localhost,
         audit_recorder: audit_recorder.as_ref(),
+        redaction_policy,
         allow_launch_services_active: proxy.allow_launch_services_active,
         #[cfg(target_os = "linux")]
         proxy_port: match caps.network_mode() {
@@ -263,6 +275,7 @@ pub(crate) fn execute_supervised_runtime(ctx: SupervisedRuntimeContext<'_>) -> R
         proxy_handle,
         executable_identity,
         audit_signer,
+        redaction_policy,
         started: &started,
         ended: &ended,
         command,

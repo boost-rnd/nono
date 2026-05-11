@@ -115,6 +115,8 @@ fn path_bytes(path: &std::path::Path) -> Vec<u8> {
 }
 
 pub(crate) fn append_session(metadata: &SessionMetadata) -> Result<LedgerRecord> {
+    validate_ledger_session_id(&metadata.session_id)?;
+
     let root = audit_root()?;
     std::fs::create_dir_all(&root).map_err(|e| {
         NonoError::Snapshot(format!(
@@ -138,6 +140,21 @@ pub(crate) fn append_session(metadata: &SessionMetadata) -> Result<LedgerRecord>
             ))
         })?;
     append_locked(&mut file, metadata)
+}
+
+fn validate_ledger_session_id(session_id: &str) -> Result<()> {
+    let valid = !session_id.is_empty()
+        && session_id.len() <= 64
+        && session_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'));
+    if valid {
+        Ok(())
+    } else {
+        Err(NonoError::ConfigParse(format!(
+            "invalid audit session id: {session_id}"
+        )))
+    }
 }
 
 fn append_locked(file: &mut std::fs::File, metadata: &SessionMetadata) -> Result<LedgerRecord> {
@@ -395,6 +412,22 @@ mod tests {
         assert!(verified.session_digest_matches);
         assert!(verified.ledger_chain_verified);
         assert_eq!(verified.entry_count, 1);
+    }
+
+    #[test]
+    fn ledger_rejects_malformed_session_id() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_string_lossy().to_string();
+        let _env = EnvVarGuard::set_all(&[("HOME", &home)]);
+
+        let meta = sample_metadata("real-token\\|real-key");
+        let err = match append_session(&meta) {
+            Ok(_) => panic!("malformed session id should be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("invalid audit session id"));
     }
 
     #[test]
