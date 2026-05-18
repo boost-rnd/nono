@@ -1572,18 +1572,19 @@ fn wait_for_child_with_pty(
 
         match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
             Ok(WaitStatus::StillAlive) => {
-                if let Some((deadline, timeout_cfg)) = startup_deadline {
-                    if Instant::now() >= deadline && !pty.is_interactive() {
-                        notify_startup_termination_for_child(
-                            timeout_cfg,
-                            pty.has_visible_output(),
-                            Some(pty),
-                        );
-                        *killed_by_timeout = true;
-                        let _ = signal::kill(child, Signal::SIGKILL);
-                        let status = wait_for_child(child)?;
-                        return Ok(status);
-                    }
+                if let Some((deadline, timeout_cfg)) = startup_deadline
+                    && Instant::now() >= deadline
+                    && !pty.is_interactive()
+                {
+                    notify_startup_termination_for_child(
+                        timeout_cfg,
+                        pty.has_visible_output(),
+                        Some(pty),
+                    );
+                    *killed_by_timeout = true;
+                    let _ = signal::kill(child, Signal::SIGKILL);
+                    let status = wait_for_child(child)?;
+                    return Ok(status);
                 }
                 continue;
             }
@@ -2050,19 +2051,18 @@ fn run_supervisor_loop(
 
         match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
             Ok(WaitStatus::StillAlive) => {
-                if let Some((deadline, timeout_cfg)) = startup_deadline {
-                    if Instant::now() >= deadline
-                        && !pty.as_ref().is_some_and(|p| p.is_interactive())
-                    {
-                        notify_startup_termination_for_child(
-                            timeout_cfg,
-                            pty.as_ref().is_some_and(|p| p.has_visible_output()),
-                            pty.as_deref_mut(),
-                        );
-                        *killed_by_timeout = true;
-                        let _ = signal::kill(child, Signal::SIGKILL);
-                        return Ok((wait_for_child(child)?, denials));
-                    }
+                if let Some((deadline, timeout_cfg)) = startup_deadline
+                    && Instant::now() >= deadline
+                    && !pty.as_ref().is_some_and(|p| p.is_interactive())
+                {
+                    notify_startup_termination_for_child(
+                        timeout_cfg,
+                        pty.as_ref().is_some_and(|p| p.has_visible_output()),
+                        pty.as_deref_mut(),
+                    );
+                    *killed_by_timeout = true;
+                    let _ = signal::kill(child, Signal::SIGKILL);
+                    return Ok((wait_for_child(child)?, denials));
                 }
                 continue;
             }
