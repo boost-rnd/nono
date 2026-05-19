@@ -192,7 +192,21 @@ fn prompt_profile_name(suggested: Option<&str>) -> Result<Option<String>> {
 
         if candidate.is_empty() {
             if let Some(suggested_name) = suggested {
-                return Ok(Some(suggested_name.to_string()));
+                if !would_shadow_existing_profile(suggested_name) {
+                    return Ok(Some(suggested_name.to_string()));
+                }
+                // The suggestion itself would shadow an existing profile
+                // (possible if pack data changed since the suggestion was
+                // generated). Require the user to enter a different name.
+                prompt_println(&format!(
+                    "{}",
+                    format!(
+                        "The suggested name '{}' would shadow an existing built-in or pack profile. Enter a different name, or type 'skip' to cancel.",
+                        suggested_name
+                    )
+                    .red()
+                ));
+                continue;
             }
             prompt_println(&format!(
                 "{}",
@@ -314,9 +328,13 @@ pub(crate) fn confirm_typed_word(prompt: &str, expected: &str) -> Result<bool> {
 }
 
 pub(crate) fn suggested_profile_name(compared_profile: Option<&str>) -> Option<String> {
-    compared_profile
+    let candidate = compared_profile
         .filter(|name| profile::is_valid_profile_name(name) && !profile::is_user_override(name))
-        .map(|name| format!("{}-local", name))
+        .map(|name| format!("{}-local", name))?;
+    if would_shadow_existing_profile(&candidate) {
+        return None;
+    }
+    Some(candidate)
 }
 
 fn suggested_run_profile_name(compared_profile: Option<&str>, cmd_name: &str) -> Option<String> {
@@ -380,16 +398,12 @@ pub(crate) fn would_shadow_existing_profile(profile_name: &str) -> bool {
     if profile::is_user_override(profile_name) {
         return false;
     }
-    // Check embedded built-in profiles first.
-    match crate::policy::load_embedded_policy() {
-        Ok(policy) => {
-            if policy.profiles.contains_key(profile_name) {
-                return true;
-            }
-        }
-        // Treat load failure as fail-safe: refuse to save rather than risk
-        // silently shadowing a built-in we couldn't enumerate.
-        Err(_) => return true,
+    // Check embedded built-in profiles. Treat load failure as fail-safe.
+    let is_builtin = crate::policy::load_embedded_policy()
+        .map(|policy| policy.profiles.contains_key(profile_name))
+        .unwrap_or(true);
+    if is_builtin {
+        return true;
     }
     // Check pack-store profiles. A user profile with the same name would
     // shadow the pack profile and break any "extends": "<name>" chains.
