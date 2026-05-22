@@ -165,8 +165,18 @@ pub(crate) fn build_proxy_config_from_flags(
         &proxy.custom_credentials,
     )?;
 
-    let (plain_hosts, endpoint_routes) =
+    let (mut plain_hosts, endpoint_routes) =
         network_policy::partition_allow_domain(&net_policy, &proxy.allow_domain)?;
+    // Endpoint-restricted domains need filter allowlist access so the proxy
+    // can reach upstream after TLS interception (h2 checks the filter at
+    // connection setup, before per-stream route matching).
+    for route in &endpoint_routes {
+        if let Some(ref hp) = route.upstream.strip_prefix("https://") {
+            plain_hosts.push(hp.to_string());
+        } else if let Some(ref hp) = route.upstream.strip_prefix("http://") {
+            plain_hosts.push(hp.to_string());
+        }
+    }
     routes.extend(endpoint_routes);
     resolved.routes = routes;
 
