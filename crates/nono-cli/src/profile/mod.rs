@@ -3204,8 +3204,8 @@ mod tests {
 
     #[test]
     fn test_load_builtin_profile() {
-        let profile = load_profile("opencode").expect("Failed to load profile");
-        assert_eq!(profile.meta.name, "opencode");
+        let profile = load_profile("openclaw").expect("Failed to load profile");
+        assert_eq!(profile.meta.name, "openclaw");
         assert!(!profile.network.block); // network allowed by default
     }
 
@@ -3262,11 +3262,14 @@ mod tests {
 
         let profiles = list_profiles();
         assert!(profiles.contains(&"openclaw".to_string()));
-        assert!(profiles.contains(&"opencode".to_string()));
-        // claude-code and codex were removed from the inbuilt profiles in
-        // v0.43.0; they ship via registry packs.
+        assert!(profiles.contains(&"swival".to_string()));
+        // These profiles were removed from built-ins; they ship via registry packs:
+        //   claude-code / claude → always-further/claude   (removed v0.43.0)
+        //   codex               → always-further/codex    (removed v0.43.0)
+        //   opencode            → always-further/opencode (removed)
         assert!(!profiles.contains(&"claude-code".to_string()));
         assert!(!profiles.contains(&"codex".to_string()));
+        assert!(!profiles.contains(&"opencode".to_string()));
     }
 
     #[test]
@@ -5080,7 +5083,7 @@ mod tests {
         std::fs::write(
             &profile_path,
             r#"{
-                "extends": "opencode",
+                "extends": "openclaw",
                 "meta": { "name": "ext-test" },
                 "filesystem": { "allow": ["/tmp/ext-test"] }
             }"#,
@@ -5089,10 +5092,10 @@ mod tests {
 
         let profile = load_from_file(&profile_path).expect("load extended profile");
         assert_eq!(profile.meta.name, "ext-test");
-        // Should inherit codex's filesystem paths
+        // Should inherit openclaw's filesystem paths
         assert!(
             profile.filesystem.allow.len() > 1,
-            "Expected inherited paths from codex, got: {:?}",
+            "Expected inherited paths from openclaw, got: {:?}",
             profile.filesystem.allow
         );
         assert!(
@@ -5151,15 +5154,15 @@ mod tests {
 
     #[test]
     fn test_extends_chain_three_levels() {
-        // Test A -> B -> codex (built-in)
+        // Test A -> B -> openclaw (built-in)
         let dir = tempdir().expect("tmpdir");
 
-        // B extends codex
+        // B extends openclaw
         let b_path = dir.path().join("b.json");
         std::fs::write(
             &b_path,
             r#"{
-                "extends": "opencode",
+                "extends": "openclaw",
                 "meta": { "name": "b-profile" },
                 "filesystem": { "allow": ["/b/path"] }
             }"#,
@@ -5774,9 +5777,9 @@ mod tests {
 
     #[test]
     fn test_extends_duplicate_base_deduplicates() {
-        // extends: ["opencode", "opencode"] — duplicate is silently skipped
+        // extends: ["openclaw", "openclaw"] — duplicate is silently skipped
         let profile = Profile {
-            extends: Some(vec!["opencode".to_string(), "opencode".to_string()]),
+            extends: Some(vec!["openclaw".to_string(), "openclaw".to_string()]),
             ..Default::default()
         };
 
@@ -5822,7 +5825,7 @@ mod tests {
         std::fs::write(
             &profile_path,
             r#"{
-                "extends": ["opencode", "opencode"],
+                "extends": ["openclaw", "openclaw"],
                 "meta": { "name": "shared-base-test" }
             }"#,
         )
@@ -6047,12 +6050,12 @@ mod tests {
     #[test]
     fn test_extends_can_clear_inherited_network_profile_with_null() {
         let dir = tempfile::tempdir().expect("tmpdir");
-        let profile_path = dir.path().join("codex-netopen.json");
+        let profile_path = dir.path().join("openclaw-netopen.json");
         std::fs::write(
             &profile_path,
             r#"{
-                "meta": { "name": "codex-netopen" },
-                "extends": "opencode",
+                "meta": { "name": "openclaw-netopen" },
+                "extends": "openclaw",
                 "network": { "network_profile": null }
             }"#,
         )
@@ -6066,8 +6069,8 @@ mod tests {
                 .filesystem
                 .allow
                 .iter()
-                .any(|path| path == "$HOME/.opencode"),
-            "expected filesystem grants from opencode to still be inherited",
+                .any(|path| path == "$HOME/.openclaw"),
+            "expected filesystem grants from openclaw to still be inherited",
         );
     }
 

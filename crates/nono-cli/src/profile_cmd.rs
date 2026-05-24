@@ -3291,9 +3291,9 @@ mod tests {
         let xdg_str = xdg.to_str().expect("utf8 xdg");
         let _env = crate::test_env::EnvVarGuard::set_all(&[("XDG_CONFIG_HOME", xdg_str)]);
 
-        // `opencode` is a known built-in profile; init to the default path must be blocked.
+        // `openclaw` is a known built-in profile; init to the default path must be blocked.
         let result = cmd_init(ProfileInitArgs {
-            name: "opencode".to_string(),
+            name: "openclaw".to_string(),
             extends: None,
             groups: vec![],
             description: None,
@@ -3321,10 +3321,10 @@ mod tests {
         let xdg_str = xdg.to_str().expect("utf8 xdg");
         let _env = crate::test_env::EnvVarGuard::set_all(&[("XDG_CONFIG_HOME", xdg_str)]);
 
-        let out = dir.path().join("opencode-draft.json");
+        let out = dir.path().join("openclaw-draft.json");
         // Shadow check applies even when --output points to a custom path.
         let result = cmd_init(ProfileInitArgs {
-            name: "opencode".to_string(),
+            name: "openclaw".to_string(),
             extends: None,
             groups: vec![],
             description: None,
@@ -3683,27 +3683,27 @@ mod tests {
             "expected 'default' in profiles"
         );
         assert!(
-            profiles.contains(&"opencode".to_string()),
-            "expected 'codex' in profiles"
+            profiles.contains(&"openclaw".to_string()),
+            "expected 'openclaw' in profiles"
         );
     }
 
     #[test]
     fn test_show_resolves_inheritance() {
-        let profile = profile::load_profile("opencode").expect("opencode profile should load");
+        let profile = profile::load_profile("openclaw").expect("openclaw profile should load");
         assert!(
             !profile.groups.include.is_empty(),
-            "opencode should have groups"
+            "openclaw should have groups"
         );
-        // opencode extends default, so it should have default's base groups
+        // openclaw extends default, so it should have default's base groups
         let has_deny = profile.groups.include.iter().any(|g| g.contains("deny"));
-        assert!(has_deny, "opencode should inherit deny groups");
+        assert!(has_deny, "openclaw should inherit deny groups");
     }
 
     #[test]
     fn test_diff_shows_differences() {
         let p1 = profile::load_profile("default").expect("default should load");
-        let p2 = profile::load_profile("opencode").expect("opencode should load");
+        let p2 = profile::load_profile("openclaw").expect("openclaw should load");
 
         let g1: BTreeSet<&str> = p1.groups.include.iter().map(|s| s.as_str()).collect();
         let g2: BTreeSet<&str> = p2.groups.include.iter().map(|s| s.as_str()).collect();
@@ -3711,7 +3711,7 @@ mod tests {
         let added: BTreeSet<&&str> = g2.difference(&g1).collect();
         assert!(
             !added.is_empty(),
-            "codex should have additional groups over default"
+            "openclaw should have additional groups over default"
         );
     }
 
