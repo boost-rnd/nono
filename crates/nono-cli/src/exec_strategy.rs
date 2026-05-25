@@ -2254,7 +2254,9 @@ fn run_supervisor_loop(
                         || pty.is_some()
                         || listener_raw_fd.is_some()
                     {
-                        debug!("Supervisor socket closed, continuing for seccomp/proxy/PTY/URL listener");
+                        debug!(
+                            "Supervisor socket closed, continuing for seccomp/proxy/PTY/URL listener"
+                        );
                         sock_fd_active = false;
                     } else {
                         debug!("Supervisor socket closed by child");
