@@ -24,6 +24,7 @@ use nono::supervisor::{ApprovalDecision, AuditEntry, SupervisorMessage, Supervis
 use nono::{
     ApprovalBackend, CapabilitySet, DenialReason, DenialRecord, DiagnosticFormatter,
     DiagnosticMode, NonoError, Result, Sandbox, SupervisorListener, SupervisorSocket,
+    UnixSocketCapability, UnixSocketMode,
 };
 use std::collections::HashSet;
 use std::ffi::{CString, OsStr};
@@ -535,6 +536,8 @@ pub fn execute_supervised(
     // PATH so the npm `open` package hits our shim first.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     let mut url_listener: Option<(SupervisorListener, tempfile::TempDir)> = None;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let mut url_listener_socket_path: Option<std::path::PathBuf> = None;
 
     if supervisor.is_some()
         && let Ok(nono_exe) = std::env::current_exe()
@@ -574,6 +577,7 @@ pub fn execute_supervised(
                     }
                 }
 
+                url_listener_socket_path = Some(socket_path);
                 url_listener = Some((listener, dir));
             }
         }
@@ -678,8 +682,6 @@ pub fn execute_supervised(
             child_caps.remap_procfs_self_references(std::process::id(), None);
             #[cfg(target_os = "linux")]
             child_caps.widen_procfs_self_to_proc();
-            #[cfg(target_os = "linux")]
-            let effective_caps: &CapabilitySet = &child_caps;
 
             #[cfg(target_os = "macos")]
             let mut child_caps = config.caps.clone();
@@ -687,6 +689,20 @@ pub fn execute_supervised(
             if supervisor.is_some() {
                 child_caps.set_seatbelt_debug_deny(true);
             }
+
+            // Grant the child's sandbox permission to connect to the supervisor
+            // listener socket. On macOS this emits (allow network-outbound (path ...));
+            // on Linux (Landlock) this is not strictly needed for AF_UNIX connect
+            // but keeps the capability model consistent.
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            if let Some(ref sock_path) = url_listener_socket_path
+                && let Ok(cap) = UnixSocketCapability::new_file(sock_path, UnixSocketMode::Connect)
+            {
+                child_caps.add_unix_socket(cap);
+            }
+
+            #[cfg(target_os = "linux")]
+            let effective_caps: &CapabilitySet = &child_caps;
             #[cfg(target_os = "macos")]
             let effective_caps: &CapabilitySet = &child_caps;
 
