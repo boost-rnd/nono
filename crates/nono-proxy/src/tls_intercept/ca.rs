@@ -245,7 +245,7 @@ fn validate_key_cert_binding(key_pair: &KeyPair, cert_der: &[u8]) -> Result<()> 
     let cert_pubkey_raw = &cert.public_key().subject_public_key.data;
     let key_pubkey_raw = key_pair.public_key_raw();
 
-    if cert_pubkey_raw.as_ref() != key_pubkey_raw {
+    if &**cert_pubkey_raw != key_pubkey_raw {
         return Err(ProxyError::Config(
             "persisted CA key does not match cert public key (Keychain corruption?)".to_string(),
         ));
