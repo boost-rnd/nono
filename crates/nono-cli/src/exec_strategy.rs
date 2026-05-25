@@ -1978,7 +1978,7 @@ fn run_supervisor_loop(
     url_listener: Option<&SupervisorListener>,
     killed_by_timeout: &mut bool,
 ) -> Result<(WaitStatus, Vec<DenialRecord>)> {
-    let sock_fd = sock.as_raw_fd();
+    let mut sock_fd = sock.as_raw_fd();
     let listener_fd = url_listener.map_or(-1, |l| l.as_raw_fd());
     let mut denials = Vec::new();
     let mut seen_request_ids = HashSet::new();
@@ -2024,9 +2024,13 @@ fn run_supervisor_loop(
         let ret = unsafe { libc::poll(pfds.as_mut_ptr(), nfds, 200) };
 
         if ret > 0 {
+            // When the child closes its end of the direct IPC socket (common for
+            // programs that close inherited fds > 2), stop polling it but keep the
+            // supervisor loop alive — the URL listener and PTY relay must continue
+            // servicing requests until the child actually exits.
             if pfds[0].revents & (libc::POLLHUP | libc::POLLERR) != 0 {
-                debug!("Supervisor socket closed by child");
-                break;
+                debug!("Supervisor socket closed by child, disabling direct IPC polling");
+                sock_fd = -1;
             }
             if pfds[0].revents & libc::POLLIN != 0 {
                 match sock.recv_message() {
@@ -2045,7 +2049,7 @@ fn run_supervisor_loop(
                     }
                     Err(e) => {
                         debug!("Error receiving supervisor message: {}", e);
-                        break;
+                        sock_fd = -1;
                     }
                 }
             }
