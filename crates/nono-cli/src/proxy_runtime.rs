@@ -112,11 +112,7 @@ pub(crate) fn resolve_effective_proxy_settings(
         .clone()
         .or_else(|| prepared.network_profile.clone());
     let mut allow_domain = prepared.allow_domain.clone();
-    allow_domain.extend(
-        args.allow_proxy
-            .iter()
-            .map(|s| crate::profile::AllowDomainEntry::Plain(s.clone())),
-    );
+    allow_domain.extend(args.allow_proxy.iter().map(|s| parse_allow_domain_arg(s)));
     let mut credentials = prepared.credentials.clone();
     credentials.extend(args.proxy_credential.clone());
 
@@ -124,6 +120,32 @@ pub(crate) fn resolve_effective_proxy_settings(
         network_profile,
         allow_domain,
         credentials,
+    }
+}
+
+/// Parse a `--allow-domain` CLI argument into an `AllowDomainEntry`.
+///
+/// Accepts either:
+/// - A plain hostname: `github.com` → `Plain("github.com")`
+/// - A URL with a path pattern: `https://github.com/atko-cic/**` →
+///   `WithEndpoints { domain: "github.com", endpoints: [{method: "*", path: "/atko-cic/**"}] }`
+fn parse_allow_domain_arg(input: &str) -> crate::profile::AllowDomainEntry {
+    if let Ok(parsed) = url::Url::parse(input) {
+        let domain = parsed.host_str().unwrap_or(input).to_string();
+        let path = parsed.path();
+        if path.is_empty() || path == "/" {
+            crate::profile::AllowDomainEntry::Plain(domain)
+        } else {
+            crate::profile::AllowDomainEntry::WithEndpoints {
+                domain,
+                endpoints: vec![nono_proxy::config::EndpointRule {
+                    method: "*".to_string(),
+                    path: path.to_string(),
+                }],
+            }
+        }
+    } else {
+        crate::profile::AllowDomainEntry::Plain(input.to_string())
     }
 }
 
@@ -434,5 +456,58 @@ mod tests {
         assert!(matches!(err, NonoError::SandboxInit(_)));
         assert!(err.to_string().contains("TLS-intercept dir"));
         Ok(())
+    }
+
+    #[test]
+    fn test_parse_allow_domain_arg_plain_hostname() {
+        let entry = parse_allow_domain_arg("github.com");
+        assert_eq!(
+            entry,
+            crate::profile::AllowDomainEntry::Plain("github.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_allow_domain_arg_url_with_path() {
+        let entry = parse_allow_domain_arg("https://github.com/atko-cic/**");
+        match entry {
+            crate::profile::AllowDomainEntry::WithEndpoints { domain, endpoints } => {
+                assert_eq!(domain, "github.com");
+                assert_eq!(endpoints.len(), 1);
+                assert_eq!(endpoints[0].method, "*");
+                assert_eq!(endpoints[0].path, "/atko-cic/**");
+            }
+            _ => panic!("expected WithEndpoints, got: {:?}", entry),
+        }
+    }
+
+    #[test]
+    fn test_parse_allow_domain_arg_url_root_is_plain() {
+        let entry = parse_allow_domain_arg("https://api.example.com/");
+        assert_eq!(
+            entry,
+            crate::profile::AllowDomainEntry::Plain("api.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_allow_domain_arg_url_no_path_is_plain() {
+        let entry = parse_allow_domain_arg("https://api.example.com");
+        assert_eq!(
+            entry,
+            crate::profile::AllowDomainEntry::Plain("api.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_allow_domain_arg_deep_path() {
+        let entry = parse_allow_domain_arg("https://github.com/org/repo/tree/**");
+        match entry {
+            crate::profile::AllowDomainEntry::WithEndpoints { domain, endpoints } => {
+                assert_eq!(domain, "github.com");
+                assert_eq!(endpoints[0].path, "/org/repo/tree/**");
+            }
+            _ => panic!("expected WithEndpoints"),
+        }
     }
 }

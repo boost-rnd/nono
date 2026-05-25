@@ -68,6 +68,8 @@ pub enum QueryResult {
         matching_capability: Option<CapabilityMatch>,
         #[serde(skip_serializing_if = "Option::is_none")]
         suggested_flag: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        endpoint_rules: Option<Vec<crate::sandbox_state::EndpointRuleState>>,
     },
     /// Not running inside a sandbox
     #[serde(rename = "not_sandboxed")]
@@ -122,6 +124,7 @@ pub fn query_path(
             policy_source: Some(format!("group:{}", matched.group_name)),
             matching_capability: None,
             suggested_flag: None,
+            endpoint_rules: None,
         });
     }
 
@@ -189,6 +192,7 @@ pub fn query_path(
                 source: cap.source.to_string(),
             }),
             suggested_flag: Some(suggested_flag_for_path(&canonical, requested)),
+            endpoint_rules: None,
         });
     }
 
@@ -201,6 +205,7 @@ pub fn query_path(
         policy_source: None,
         matching_capability: None,
         suggested_flag: Some(suggested_flag_for_path(&canonical, requested)),
+        endpoint_rules: None,
     })
 }
 
@@ -217,16 +222,19 @@ pub fn query_network(
     allowed_domains: &[String],
     domain_endpoints: &[crate::sandbox_state::DomainEndpointState],
 ) -> QueryResult {
+    let (domain, url_path) = parse_host_input(host);
+
     match caps.network_mode() {
         nono::NetworkMode::Blocked => QueryResult::Denied {
             reason: "network_blocked".to_string(),
             details: Some(format!(
                 "Network access is fully blocked. Connection to {}:{} would be denied.",
-                host, port
+                domain, port
             )),
             policy_source: None,
             matching_capability: None,
-            suggested_flag: Some(format!("--allow-domain {}", host)),
+            suggested_flag: Some(format!("--allow-domain {}", domain)),
+            endpoint_rules: None,
         },
         nono::NetworkMode::ProxyOnly { .. } => {
             let filter = if allowed_domains.is_empty() {
@@ -235,48 +243,76 @@ pub fn query_network(
                 nono::net_filter::HostFilter::new(allowed_domains)
             };
             // Pass empty IPs: DNS resolution happens at proxy time, not query time.
-            match filter.check_host(host, &[]) {
+            match filter.check_host(&domain, &[]) {
                 nono::net_filter::FilterResult::Allow => {
                     let matching_endpoints = domain_endpoints
                         .iter()
-                        .find(|de| de.domain.eq_ignore_ascii_case(host));
+                        .find(|de| de.domain.eq_ignore_ascii_case(&domain));
 
-                    let (access_msg, rules) = match matching_endpoints {
-                        Some(de) => (
-                            format!(
+                    match (matching_endpoints, &url_path) {
+                        (Some(de), Some(path)) => {
+                            if path_matches_endpoint_rules(path, &de.endpoints) {
+                                QueryResult::Allowed {
+                                    reason: "proxy_allowed".to_string(),
+                                    granted_path: None,
+                                    access: Some(format!(
+                                        "Connection to {}:{} allowed via proxy \
+                                         (path {} matches endpoint rules)",
+                                        domain, port, path,
+                                    )),
+                                    source: Some("domain allowlist".to_string()),
+                                    endpoint_rules: Some(de.endpoints.clone()),
+                                }
+                            } else {
+                                QueryResult::Denied {
+                                    reason: "endpoint_restricted".to_string(),
+                                    details: Some(format!(
+                                        "{} is allowed but {} does not match any endpoint rule",
+                                        domain, path,
+                                    )),
+                                    policy_source: Some("endpoint rules".to_string()),
+                                    matching_capability: None,
+                                    suggested_flag: Some(format!(
+                                        "--allow-domain https://{}{}",
+                                        domain, path,
+                                    )),
+                                    endpoint_rules: Some(de.endpoints.clone()),
+                                }
+                            }
+                        }
+                        (Some(de), None) => QueryResult::Allowed {
+                            reason: "proxy_allowed".to_string(),
+                            granted_path: None,
+                            access: Some(format!(
                                 "Connection to {}:{} allowed via proxy \
                                  (restricted to {} endpoint rules)",
-                                host,
+                                domain,
                                 port,
                                 de.endpoints.len(),
-                            ),
-                            Some(de.endpoints.clone()),
-                        ),
-                        None => (
-                            format!(
+                            )),
+                            source: Some("domain allowlist".to_string()),
+                            endpoint_rules: Some(de.endpoints.clone()),
+                        },
+                        (None, _) => QueryResult::Allowed {
+                            reason: "proxy_allowed".to_string(),
+                            granted_path: None,
+                            access: Some(format!(
                                 "Connection to {}:{} would be allowed via proxy{}",
-                                host,
+                                domain,
                                 port,
                                 if allowed_domains.is_empty() {
                                     " (no domain filter)"
                                 } else {
                                     ""
                                 }
-                            ),
-                            None,
-                        ),
-                    };
-
-                    QueryResult::Allowed {
-                        reason: "proxy_allowed".to_string(),
-                        granted_path: None,
-                        access: Some(access_msg),
-                        source: Some(if allowed_domains.is_empty() {
-                            "proxy".to_string()
-                        } else {
-                            "domain allowlist".to_string()
-                        }),
-                        endpoint_rules: rules,
+                            )),
+                            source: Some(if allowed_domains.is_empty() {
+                                "proxy".to_string()
+                            } else {
+                                "domain allowlist".to_string()
+                            }),
+                            endpoint_rules: None,
+                        },
                     }
                 }
                 deny => QueryResult::Denied {
@@ -284,18 +320,70 @@ pub fn query_network(
                     details: Some(format!("Domain filtering is active. {}", deny.reason())),
                     policy_source: Some("proxy domain filter".to_string()),
                     matching_capability: None,
-                    suggested_flag: Some(format!("--allow-domain {}", host)),
+                    suggested_flag: Some(format!("--allow-domain {}", domain)),
+                    endpoint_rules: None,
                 },
             }
         }
         nono::NetworkMode::AllowAll => QueryResult::Allowed {
             reason: "network_allowed".to_string(),
             granted_path: None,
-            access: Some(format!("Connection to {}:{} would be allowed", host, port)),
+            access: Some(format!(
+                "Connection to {}:{} would be allowed",
+                domain, port
+            )),
             source: None,
             endpoint_rules: None,
         },
     }
+}
+
+/// Parse a `--host` input that may be a bare hostname or a full URL.
+/// Returns `(domain, optional_path)`.
+fn parse_host_input(input: &str) -> (String, Option<String>) {
+    if let Ok(parsed) = url::Url::parse(input) {
+        let domain = parsed.host_str().unwrap_or(input).to_lowercase();
+        let path = parsed.path();
+        let url_path = if path.is_empty() || path == "/" {
+            None
+        } else {
+            Some(path.to_string())
+        };
+        (domain, url_path)
+    } else {
+        (input.to_lowercase(), None)
+    }
+}
+
+/// Normalize a URL path for endpoint rule matching (mirrors proxy behavior).
+fn normalize_path(path: &str) -> String {
+    let path = path.split('?').next().unwrap_or(path);
+    let binary = urlencoding::decode_binary(path.as_bytes());
+    let decoded = String::from_utf8_lossy(&binary);
+    let segments: Vec<&str> = decoded.split('/').filter(|s| !s.is_empty()).collect();
+    if segments.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", segments.join("/"))
+    }
+}
+
+/// Check if a path matches any endpoint rule using glob matching.
+fn path_matches_endpoint_rules(
+    path: &str,
+    rules: &[crate::sandbox_state::EndpointRuleState],
+) -> bool {
+    if rules.is_empty() {
+        return true;
+    }
+    let normalized = normalize_path(path);
+    rules.iter().any(|r| {
+        let Ok(glob) = globset::Glob::new(&r.path) else {
+            return false;
+        };
+        let matcher = glob.compile_matcher();
+        matcher.is_match(&normalized)
+    })
 }
 
 /// Query whether a Landlock scope is requested and enforced.
@@ -417,6 +505,7 @@ pub fn print_result(result: &QueryResult) {
             policy_source,
             matching_capability,
             suggested_flag,
+            endpoint_rules,
         } => {
             println!("{}", "DENIED".red().bold());
             println!("  Reason: {}", reason);
@@ -434,6 +523,12 @@ pub fn print_result(result: &QueryResult) {
             }
             if let Some(flag) = suggested_flag {
                 println!("  Suggested fix: {}", flag);
+            }
+            if let Some(rules) = endpoint_rules {
+                println!("  Permitted endpoints ({} total):", rules.len());
+                for rule in rules {
+                    println!("    {} {}", rule.method, rule.path);
+                }
             }
         }
         QueryResult::NotSandboxed { message } => {
@@ -791,5 +886,174 @@ mod tests {
             query_network("169.254.169.254", 80, &caps, &allowed, &[]),
             QueryResult::Denied { .. }
         ));
+    }
+
+    #[test]
+    fn test_query_network_url_extracts_domain() {
+        let caps = CapabilitySet::new().set_network_mode(nono::NetworkMode::ProxyOnly {
+            port: 0,
+            bind_ports: vec![],
+        });
+        let allowed = vec!["github.com".to_string()];
+        // Full URL should extract domain and match
+        assert!(matches!(
+            query_network("https://github.com/some/repo", 443, &caps, &allowed, &[]),
+            QueryResult::Allowed { .. }
+        ));
+    }
+
+    #[test]
+    fn test_query_network_url_with_endpoint_rules_path_matches() {
+        let caps = CapabilitySet::new().set_network_mode(nono::NetworkMode::ProxyOnly {
+            port: 0,
+            bind_ports: vec![],
+        });
+        let allowed = vec!["github.com".to_string()];
+        let endpoints = vec![crate::sandbox_state::DomainEndpointState {
+            domain: "github.com".to_string(),
+            endpoints: vec![
+                crate::sandbox_state::EndpointRuleState {
+                    method: "*".to_string(),
+                    path: "/atko-cic/**".to_string(),
+                },
+                crate::sandbox_state::EndpointRuleState {
+                    method: "*".to_string(),
+                    path: "/always-further/**".to_string(),
+                },
+            ],
+        }];
+        // Path that matches a rule
+        let result = query_network(
+            "https://github.com/atko-cic/repo",
+            443,
+            &caps,
+            &allowed,
+            &endpoints,
+        );
+        assert!(matches!(result, QueryResult::Allowed { .. }));
+    }
+
+    #[test]
+    fn test_query_network_url_with_endpoint_rules_path_denied() {
+        let caps = CapabilitySet::new().set_network_mode(nono::NetworkMode::ProxyOnly {
+            port: 0,
+            bind_ports: vec![],
+        });
+        let allowed = vec!["github.com".to_string()];
+        let endpoints = vec![crate::sandbox_state::DomainEndpointState {
+            domain: "github.com".to_string(),
+            endpoints: vec![crate::sandbox_state::EndpointRuleState {
+                method: "*".to_string(),
+                path: "/atko-cic/**".to_string(),
+            }],
+        }];
+        // Path that does NOT match any rule
+        let result = query_network(
+            "https://github.com/openai/codex",
+            443,
+            &caps,
+            &allowed,
+            &endpoints,
+        );
+        match result {
+            QueryResult::Denied {
+                reason,
+                details,
+                endpoint_rules,
+                ..
+            } => {
+                assert_eq!(reason, "endpoint_restricted");
+                assert!(
+                    details
+                        .as_deref()
+                        .is_some_and(|d| d.contains("github.com") && d.contains("/openai/codex"))
+                );
+                let rules = endpoint_rules.expect("expected endpoint rules");
+                assert_eq!(rules.len(), 1);
+                assert_eq!(rules[0].path, "/atko-cic/**");
+            }
+            _ => panic!("expected denied result, got: {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_query_network_bare_domain_with_endpoint_rules_shows_allowed() {
+        let caps = CapabilitySet::new().set_network_mode(nono::NetworkMode::ProxyOnly {
+            port: 0,
+            bind_ports: vec![],
+        });
+        let allowed = vec!["github.com".to_string()];
+        let endpoints = vec![crate::sandbox_state::DomainEndpointState {
+            domain: "github.com".to_string(),
+            endpoints: vec![crate::sandbox_state::EndpointRuleState {
+                method: "*".to_string(),
+                path: "/atko-cic/**".to_string(),
+            }],
+        }];
+        // Bare domain (no path) shows allowed with endpoint rules
+        let result = query_network("github.com", 443, &caps, &allowed, &endpoints);
+        match result {
+            QueryResult::Allowed {
+                endpoint_rules,
+                access,
+                ..
+            } => {
+                let rules = endpoint_rules.expect("expected endpoint rules");
+                assert_eq!(rules.len(), 1);
+                assert!(
+                    access
+                        .expect("expected access message")
+                        .contains("restricted to 1 endpoint rules")
+                );
+            }
+            _ => panic!("expected allowed result, got: {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_parse_host_input_url() {
+        let (domain, path) = parse_host_input("https://github.com/openai/codex");
+        assert_eq!(domain, "github.com");
+        assert_eq!(path.as_deref(), Some("/openai/codex"));
+    }
+
+    #[test]
+    fn test_parse_host_input_bare_hostname() {
+        let (domain, path) = parse_host_input("github.com");
+        assert_eq!(domain, "github.com");
+        assert_eq!(path, None);
+    }
+
+    #[test]
+    fn test_parse_host_input_url_root_path() {
+        let (domain, path) = parse_host_input("https://api.example.com/");
+        assert_eq!(domain, "api.example.com");
+        assert_eq!(path, None);
+    }
+
+    #[test]
+    fn test_path_matches_endpoint_rules_glob() {
+        let rules = vec![
+            crate::sandbox_state::EndpointRuleState {
+                method: "*".to_string(),
+                path: "/atko-cic/**".to_string(),
+            },
+            crate::sandbox_state::EndpointRuleState {
+                method: "GET".to_string(),
+                path: "/public/*".to_string(),
+            },
+        ];
+        assert!(path_matches_endpoint_rules(
+            "/atko-cic/repo/tree/main",
+            &rules
+        ));
+        assert!(path_matches_endpoint_rules("/public/file.txt", &rules));
+        assert!(!path_matches_endpoint_rules("/openai/codex", &rules));
+        assert!(!path_matches_endpoint_rules("/other/path", &rules));
+    }
+
+    #[test]
+    fn test_path_matches_empty_rules_allows_all() {
+        assert!(path_matches_endpoint_rules("/any/path", &[]));
     }
 }
