@@ -96,6 +96,29 @@ struct DenialItem {
     action: ItemAction,
 }
 
+const DENIAL_SELECTOR_MAX_VISIBLE_ITEMS: usize = 15;
+
+fn denial_selector_visible_range(
+    item_count: usize,
+    cursor: usize,
+    max_visible: usize,
+) -> (usize, usize) {
+    if item_count <= max_visible || max_visible == 0 {
+        return (0, item_count);
+    }
+
+    let half_window = max_visible / 2;
+    let start = if cursor < half_window {
+        0
+    } else if cursor + half_window >= item_count {
+        item_count - max_visible
+    } else {
+        cursor - half_window
+    };
+
+    (start, start + max_visible)
+}
+
 fn extract_denial_items(patch: &profile::Profile) -> Vec<DenialItem> {
     let mut items = Vec::new();
     let fs = &patch.filesystem;
@@ -1062,19 +1085,10 @@ fn render_denial_selector(
     // height. When the list is taller than the viewport the cursor-up escape
     // sequence is capped at the top of the screen, which corrupts the UI and
     // erases prior terminal history on subsequent redraws.
-    const MAX_VISIBLE: usize = 15;
-    let start = if items.len() <= MAX_VISIBLE {
-        0
-    } else if cursor < MAX_VISIBLE / 2 {
-        0
-    } else if cursor + MAX_VISIBLE / 2 >= items.len() {
-        items.len() - MAX_VISIBLE
-    } else {
-        cursor - MAX_VISIBLE / 2
-    };
-    let end = (start + MAX_VISIBLE).min(items.len());
+    let (start, end) =
+        denial_selector_visible_range(items.len(), cursor, DENIAL_SELECTOR_MAX_VISIBLE_ITEMS);
 
-    if items.len() > MAX_VISIBLE {
+    if items.len() > DENIAL_SELECTOR_MAX_VISIBLE_ITEMS {
         tty_ln!(
             "{}  {}",
             theme::fg(" [nono] Review denied paths", t.brand).bold(),
@@ -1096,8 +1110,8 @@ fn render_denial_selector(
     );
     tty_ln!("");
 
-    for i in start..end {
-        let item = &items[i];
+    for (offset, item) in items[start..end].iter().enumerate() {
+        let i = start + offset;
         let selected = i == cursor;
 
         let cursor_glyph = if selected {
@@ -2017,6 +2031,42 @@ mod tests {
         assert_eq!(
             prompt_inline_for_tty("Update profile? [Y/n] "),
             "\rUpdate profile? [Y/n] \u{1b}[K"
+        );
+    }
+
+    #[test]
+    fn denial_selector_visible_range_keeps_short_lists_unscrolled() {
+        assert_eq!(
+            denial_selector_visible_range(10, 9, DENIAL_SELECTOR_MAX_VISIBLE_ITEMS),
+            (0, 10)
+        );
+    }
+
+    #[test]
+    fn denial_selector_visible_range_centers_cursor_when_possible() {
+        assert_eq!(
+            denial_selector_visible_range(50, 25, DENIAL_SELECTOR_MAX_VISIBLE_ITEMS),
+            (18, 33)
+        );
+    }
+
+    #[test]
+    fn denial_selector_visible_range_pins_to_top_and_bottom_edges() {
+        assert_eq!(
+            denial_selector_visible_range(50, 0, DENIAL_SELECTOR_MAX_VISIBLE_ITEMS),
+            (0, 15)
+        );
+        assert_eq!(
+            denial_selector_visible_range(50, 49, DENIAL_SELECTOR_MAX_VISIBLE_ITEMS),
+            (35, 50)
+        );
+    }
+
+    #[test]
+    fn denial_selector_visible_range_handles_empty_lists() {
+        assert_eq!(
+            denial_selector_visible_range(0, 0, DENIAL_SELECTOR_MAX_VISIBLE_ITEMS),
+            (0, 0)
         );
     }
 
