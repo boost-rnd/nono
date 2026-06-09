@@ -26,6 +26,17 @@ assets = [
 ]
 conf-files = ["/etc/nono/profiles/"]
 
+# --- abs-prototype patch (abs-lib-export branch) -----------------------
+# Add a library target alongside the bin so downstream crates (a-better-
+# sandbox / abs-nono) can call into nono-cli's high-level APIs (profile
+# loading, run_sandbox, etc.) without reimplementing them on top of the
+# pure `nono` library primitive. This patch lives only on the
+# `abs-lib-export` branch in our local submodule (see
+# vendor/nono/.git/HEAD); upstream is unchanged.
+[lib]
+name = "nono_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "nono"
 path = "src/main.rs"
